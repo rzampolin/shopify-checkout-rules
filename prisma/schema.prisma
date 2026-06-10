@@ -1,0 +1,30 @@
+// Prisma schema for CheckoutRules — session storage only.
+// The app stores no customer PII; sessions are the only persistent data.
+//
+// PII NOTE: firstName, lastName, email, accountOwner, locale, collaborator,
+// and emailVerified are online-session user fields populated by Shopify when
+// isOnline = true. This app uses OFFLINE sessions exclusively (no per-user
+// token needed). Those columns have been removed so the GDPR compliance
+// webhooks' "no PII stored" claim is accurate. If you switch to online
+// sessions in future, add back only the minimum fields you actually need and
+// update the GDPR handlers accordingly.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id          String    @id
+  shop        String
+  state       String
+  isOnline    Boolean   @default(false)
+  scope       String?
+  expires     DateTime?
+  accessToken String
+  userId      BigInt?
+}

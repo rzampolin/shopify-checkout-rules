@@ -1,0 +1,14 @@
+{
+  "name": "checkout-rules-discount",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typegen": "shopify app function typegen"
+  },
+  "devDependencies": {
+    "@shopify/shopify_function": "^3.0.0",
+    "typescript": "^5.3.3"
+  }
+}

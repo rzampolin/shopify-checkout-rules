@@ -1,0 +1,33 @@
+api_version = "2025-10"
+
+[[extensions]]
+type = "function"
+name = "Checkout Rules Discount"
+handle = "checkout-rules-discount"
+
+[[extensions.targeting]]
+target = "cart.lines.discounts.generate.run"
+export = "cartLinesDiscountsGenerateRun"
+input_query = "src/cart_lines_discounts_generate_run.graphql"
+
+[extensions.build]
+command = "npm run build"
+watch_paths = ["src/**/*.ts", "../../../app/lib/rule-engine/**/*.ts"]
+
+[extensions.ui.paths]
+create = "/"
+details = "/"
+
+# Input query variables source — Shopify reads this JSON metafield at runtime
+# and injects its top-level keys as GraphQL variables into the input query.
+# Shape: { "collectionIds": ["gid://shopify/Collection/..."], "customerTags": ["vip"] }
+# Writing this metafield is all that is needed to change which collections/tags
+# are queried — no deploy required.
+[extensions.input.variables]
+namespace = "$app"
+key       = "function-input-vars"
+
+# Ruleset metafield — the Function reads this for discount rules configuration.
+[[extensions.metafields]]
+namespace = "$app"
+key       = "ruleset"

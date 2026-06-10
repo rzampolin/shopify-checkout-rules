@@ -1,0 +1,65 @@
+# CheckoutRules — Discount Function Input Query
+#
+# $collectionIds and $customerTags are declared as NULLABLE list variables.
+# Their values are injected at runtime by Shopify from the JSON metafield
+# identified in [extensions.input.variables] in shopify.extension.toml.
+# The metafield (namespace: "$app", key: "function-input-vars") must have a
+# JSON object whose top-level keys match the variable names, e.g.:
+#   { "collectionIds": [...], "customerTags": [...] }
+#
+# Nullable (no !) is required: if the metafield is absent or a key is missing,
+# Shopify resolves the variable to null rather than failing execution.
+# inCollections(ids: null) and hasTags(tags: null) both return empty arrays,
+# which the adapter handles correctly via the existing ?? [] fallback.
+#
+# Changing the metafield value takes effect at runtime with NO deploy.
+# Maximum 100 elements per list (Shopify Functions platform limit).
+
+query CartLinesDiscountsGenerateRun(
+  $collectionIds: [ID!]
+  $customerTags: [String!]
+) {
+  cart {
+    cost {
+      subtotalAmount {
+        amount
+      }
+    }
+    lines {
+      id
+      quantity
+      cost {
+        subtotalAmount {
+          amount
+        }
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          id
+          product {
+            id
+            inCollections(ids: $collectionIds) {
+              collectionId
+              isMember
+            }
+          }
+        }
+      }
+    }
+    buyerIdentity {
+      customer {
+        hasTags(tags: $customerTags) {
+          tag
+          hasTag
+        }
+      }
+    }
+  }
+  discount {
+    discountClasses
+    metafield(namespace: "$app", key: "ruleset") {
+      jsonValue
+    }
+  }
+}
