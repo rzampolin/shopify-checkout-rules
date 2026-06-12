@@ -15,7 +15,6 @@ import { json, redirect } from "@remix-run/node";
 import {
   useActionData,
   useLoaderData,
-  useNavigate,
   useNavigation,
   useSubmit,
 } from "@remix-run/react";
@@ -33,7 +32,9 @@ import {
   Text,
   Box,
   Badge,
+  Thumbnail,
 } from "@shopify/polaris";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import shopify from "../shopify.server";
 import {
@@ -213,11 +214,143 @@ function defaultAction(type: ActionType): Action {
   }
 }
 
+// ---------------------------------------------------------------------------
+// CollectionDisplay — cached title/image for a collection GID
+// ---------------------------------------------------------------------------
+
+interface CollectionMeta {
+  title: string;
+  imageUrl?: string;
+}
+
+// ---------------------------------------------------------------------------
+// CollectionPicker — single-select reusable component
+//
+// value:    the stored GID string (or null when unset)
+// onChange: receives the new GID string (or null to clear)
+// meta:     cached title/image for the current GID (if available)
+// onMeta:   callback to update the title/image cache in the parent
+// emptyLabel: text shown when nothing is selected (defaults to "All products")
+// ---------------------------------------------------------------------------
+
+interface CollectionPickerProps {
+  value: string | null;
+  onChange: (gid: string | null) => void;
+  meta: CollectionMeta | null;
+  onMeta: (gid: string, meta: CollectionMeta) => void;
+  emptyLabel?: string;
+}
+
+function CollectionPicker({
+  value,
+  onChange,
+  meta,
+  onMeta,
+  emptyLabel = "All products",
+}: CollectionPickerProps) {
+  const shopifyBridge = useAppBridge();
+
+  async function openPicker() {
+    const selectionIds = value ? [{ id: value }] : [];
+    const selected = await shopifyBridge.resourcePicker({
+      type: "collection",
+      multiple: false,
+      action: "select",
+      selectionIds,
+    });
+    if (!selected || selected.length === 0) return;
+    const col = selected[0];
+    const gid = col.id;
+    // Defensively handle both image field shapes App Bridge may return
+    const imgSrc =
+      (col as unknown as { image?: { originalSrc?: string; url?: string } })
+        ?.image?.originalSrc ??
+      (col as unknown as { image?: { url?: string } })?.image?.url ??
+      undefined;
+    onMeta(gid, { title: col.title, imageUrl: imgSrc });
+    onChange(gid);
+  }
+
+  function handleRemove() {
+    onChange(null);
+  }
+
+  if (!value) {
+    return (
+      <InlineStack gap="200" blockAlign="center">
+        <Text as="span" tone="subdued">
+          {emptyLabel}
+        </Text>
+        <Button variant="plain" onClick={openPicker}>
+          Choose collection
+        </Button>
+      </InlineStack>
+    );
+  }
+
+  const displayTitle = meta?.title ?? "Selected collection";
+
+  return (
+    <InlineStack gap="300" blockAlign="center">
+      {meta?.imageUrl ? (
+        <Thumbnail
+          source={meta.imageUrl}
+          alt={displayTitle}
+          size="small"
+        />
+      ) : null}
+      <BlockStack gap="0">
+        <Text as="span" fontWeight="semibold">
+          {displayTitle}
+        </Text>
+      </BlockStack>
+      <Button variant="plain" onClick={openPicker}>
+        Change
+      </Button>
+      <Button variant="plain" tone="critical" onClick={handleRemove}>
+        Remove
+      </Button>
+    </InlineStack>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CollectionConditionPicker — single-select for conditions
+//
+// The condition stores a string[] (one GID). This wraps CollectionPicker,
+// converting between string|null (picker) and string[] (condition.value).
+// ---------------------------------------------------------------------------
+
+interface CollectionConditionPickerProps {
+  value: string[];
+  onChange: (gids: string[]) => void;
+  meta: CollectionMeta | null;
+  onMeta: (gid: string, meta: CollectionMeta) => void;
+}
+
+function CollectionConditionPicker({
+  value,
+  onChange,
+  meta,
+  onMeta,
+}: CollectionConditionPickerProps) {
+  const currentGid = value.length > 0 ? value[0] : null;
+
+  return (
+    <CollectionPicker
+      value={currentGid}
+      onChange={(gid) => onChange(gid ? [gid] : [])}
+      meta={meta}
+      onMeta={onMeta}
+      emptyLabel="No collection selected"
+    />
+  );
+}
+
 export default function RuleBuilderPage() {
   const { rule: loadedRule, ruleset, discountNodeId, isNew } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
-  const navigate = useNavigate();
   const navigation = useNavigation();
   const submit = useSubmit();
   const isSaving = navigation.state !== "idle";
@@ -229,6 +362,17 @@ export default function RuleBuilderPage() {
   const [orderedRules, setOrderedRules] = useState<Rule[]>(ruleset.rules);
   const dragItem = useRef<number | null>(null);
   const dragOver = useRef<number | null>(null);
+
+  // Collection metadata cache: gid -> { title, imageUrl }
+  // Used to show names instead of raw GIDs. Keyed by GID so it survives
+  // condition/action index changes.
+  const [collectionMetaCache, setCollectionMetaCache] = useState<
+    Map<string, CollectionMeta>
+  >(new Map());
+
+  function updateCollectionMeta(gid: string, meta: CollectionMeta) {
+    setCollectionMetaCache((prev) => new Map(prev).set(gid, meta));
+  }
 
   useEffect(() => {
     setOrderedRules(ruleset.rules);
@@ -417,6 +561,8 @@ export default function RuleBuilderPage() {
                     <ConditionEditor
                       condition={cond}
                       onChange={(updated) => updateCondition(idx, updated)}
+                      collectionMetaCache={collectionMetaCache}
+                      onCollectionMeta={updateCollectionMeta}
                     />
                   </BlockStack>
                 </Box>
@@ -450,6 +596,8 @@ export default function RuleBuilderPage() {
               <ActionEditor
                 action={rule.action}
                 onChange={(a) => setRule((r) => ({ ...r, action: a }))}
+                collectionMetaCache={collectionMetaCache}
+                onCollectionMeta={updateCollectionMeta}
               />
             </BlockStack>
           </Card>
@@ -487,7 +635,7 @@ export default function RuleBuilderPage() {
                       style={{ cursor: "grab" }}
                     >
                       <InlineStack gap="200" blockAlign="center">
-                          <Text as="span" tone="subdued" aria-hidden="true">⠿</Text>
+                          <Text as="span" tone="subdued" aria-hidden="true">&#8923;</Text>
                         <Text as="span" tone="subdued">
                           {idx + 1}.
                         </Text>
@@ -521,9 +669,16 @@ export default function RuleBuilderPage() {
 interface ConditionEditorProps {
   condition: Condition;
   onChange: (c: Condition) => void;
+  collectionMetaCache: Map<string, CollectionMeta>;
+  onCollectionMeta: (gid: string, meta: CollectionMeta) => void;
 }
 
-function ConditionEditor({ condition, onChange }: ConditionEditorProps) {
+function ConditionEditor({
+  condition,
+  onChange,
+  collectionMetaCache,
+  onCollectionMeta,
+}: ConditionEditorProps) {
   switch (condition.type) {
     case "cartSubtotal":
       return (
@@ -531,8 +686,8 @@ function ConditionEditor({ condition, onChange }: ConditionEditorProps) {
           <Select
             label="Operator"
             options={[
-              { label: "≥", value: "gte" },
-              { label: "≤", value: "lte" },
+              { label: ">=", value: "gte" },
+              { label: "<=", value: "lte" },
               { label: ">", value: "gt" },
               { label: "<", value: "lt" },
               { label: "=", value: "eq" },
@@ -581,9 +736,11 @@ function ConditionEditor({ condition, onChange }: ConditionEditorProps) {
         </InlineStack>
       );
 
-    case "productInCollection":
+    case "productInCollection": {
+      const currentGid = condition.value.length > 0 ? condition.value[0] : null;
+      const meta = currentGid ? (collectionMetaCache.get(currentGid) ?? null) : null;
       return (
-        <BlockStack gap="200">
+        <BlockStack gap="300">
           <Select
             label="Match"
             options={[
@@ -595,21 +752,32 @@ function ConditionEditor({ condition, onChange }: ConditionEditorProps) {
               onChange({ ...condition, operator: v as typeof condition.operator })
             }
           />
-          <TextField
-            label="Collection GIDs (one per line)"
-            multiline={3}
-            value={condition.value.join("\n")}
-            onChange={(v) =>
-              onChange({
-                ...condition,
-                value: v.split("\n").map((s) => s.trim()).filter(Boolean),
-              })
-            }
-            helpText='e.g. gid://shopify/Collection/123'
-            autoComplete="off"
-          />
+          <BlockStack gap="100">
+            <Text as="span" variant="bodySm" tone="subdued">
+              Collection
+            </Text>
+            {currentGid ? (
+              <CollectionPicker
+                value={currentGid}
+                onChange={(gid) =>
+                  onChange({ ...condition, value: gid ? [gid] : [] })
+                }
+                meta={meta}
+                onMeta={onCollectionMeta}
+                emptyLabel="No collection selected"
+              />
+            ) : (
+              <CollectionConditionPicker
+                value={condition.value}
+                onChange={(gids) => onChange({ ...condition, value: gids })}
+                meta={null}
+                onMeta={onCollectionMeta}
+              />
+            )}
+          </BlockStack>
         </BlockStack>
       );
+    }
 
     case "quantity":
       return (
@@ -617,8 +785,8 @@ function ConditionEditor({ condition, onChange }: ConditionEditorProps) {
           <Select
             label="Operator"
             options={[
-              { label: "≥", value: "gte" },
-              { label: "≤", value: "lte" },
+              { label: ">=", value: "gte" },
+              { label: "<=", value: "lte" },
               { label: ">", value: "gt" },
               { label: "<", value: "lt" },
               { label: "=", value: "eq" },
@@ -647,9 +815,16 @@ function ConditionEditor({ condition, onChange }: ConditionEditorProps) {
 interface ActionEditorProps {
   action: Action;
   onChange: (a: Action) => void;
+  collectionMetaCache: Map<string, CollectionMeta>;
+  onCollectionMeta: (gid: string, meta: CollectionMeta) => void;
 }
 
-function ActionEditor({ action, onChange }: ActionEditorProps) {
+function ActionEditor({
+  action,
+  onChange,
+  collectionMetaCache,
+  onCollectionMeta,
+}: ActionEditorProps) {
   const scopeOptions = [
     { label: "Entire order", value: "order" },
     { label: "Matching products", value: "product" },
@@ -658,6 +833,9 @@ function ActionEditor({ action, onChange }: ActionEditorProps) {
   switch (action.type) {
     case "percentageOff": {
       const a = action as PercentageOffAction;
+      const colMeta = a.collectionId
+        ? (collectionMetaCache.get(a.collectionId) ?? null)
+        : null;
       return (
         <BlockStack gap="300">
           <InlineStack gap="300">
@@ -679,13 +857,18 @@ function ActionEditor({ action, onChange }: ActionEditorProps) {
             />
           </InlineStack>
           {a.scope === "product" && (
-            <TextField
-              label="Restrict to collection GID (optional)"
-              value={a.collectionId ?? ""}
-              onChange={(v) => onChange({ ...a, collectionId: v || null })}
-              helpText="Leave blank to apply to all product lines."
-              autoComplete="off"
-            />
+            <BlockStack gap="100">
+              <Text as="span" variant="bodySm" tone="subdued">
+                Restrict to collection (leave unset to apply to all products)
+              </Text>
+              <CollectionPicker
+                value={a.collectionId ?? null}
+                onChange={(gid) => onChange({ ...a, collectionId: gid })}
+                meta={colMeta}
+                onMeta={onCollectionMeta}
+                emptyLabel="All products"
+              />
+            </BlockStack>
           )}
         </BlockStack>
       );
@@ -693,6 +876,9 @@ function ActionEditor({ action, onChange }: ActionEditorProps) {
 
     case "fixedOff": {
       const a = action as FixedOffAction;
+      const colMeta = a.collectionId
+        ? (collectionMetaCache.get(a.collectionId) ?? null)
+        : null;
       return (
         <BlockStack gap="300">
           <InlineStack gap="300">
@@ -713,13 +899,18 @@ function ActionEditor({ action, onChange }: ActionEditorProps) {
             />
           </InlineStack>
           {a.scope === "product" && (
-            <TextField
-              label="Restrict to collection GID (optional)"
-              value={a.collectionId ?? ""}
-              onChange={(v) => onChange({ ...a, collectionId: v || null })}
-              helpText="Leave blank to apply to all product lines."
-              autoComplete="off"
-            />
+            <BlockStack gap="100">
+              <Text as="span" variant="bodySm" tone="subdued">
+                Restrict to collection (leave unset to apply to all products)
+              </Text>
+              <CollectionPicker
+                value={a.collectionId ?? null}
+                onChange={(gid) => onChange({ ...a, collectionId: gid })}
+                meta={colMeta}
+                onMeta={onCollectionMeta}
+                emptyLabel="All products"
+              />
+            </BlockStack>
           )}
         </BlockStack>
       );
@@ -817,6 +1008,9 @@ function ActionEditor({ action, onChange }: ActionEditorProps) {
 
     case "bogo": {
       const a = action as BogoAction;
+      const colMeta = a.collectionId
+        ? (collectionMetaCache.get(a.collectionId) ?? null)
+        : null;
       return (
         <BlockStack gap="300">
           <InlineStack gap="300">
@@ -850,13 +1044,18 @@ function ActionEditor({ action, onChange }: ActionEditorProps) {
               autoComplete="off"
             />
           </InlineStack>
-          <TextField
-            label="Restrict to collection GID (optional)"
-            value={a.collectionId ?? ""}
-            onChange={(v) => onChange({ ...a, collectionId: v || null })}
-            helpText="Only lines in this collection qualify as buy-eligible items."
-            autoComplete="off"
-          />
+          <BlockStack gap="100">
+            <Text as="span" variant="bodySm" tone="subdued">
+              Restrict to collection (leave unset to apply to all products)
+            </Text>
+            <CollectionPicker
+              value={a.collectionId ?? null}
+              onChange={(gid) => onChange({ ...a, collectionId: gid })}
+              meta={colMeta}
+              onMeta={onCollectionMeta}
+              emptyLabel="All products"
+            />
+          </BlockStack>
         </BlockStack>
       );
     }

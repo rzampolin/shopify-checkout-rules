@@ -1,13 +1,14 @@
 // Prisma schema for CheckoutRules — session storage only.
-// The app stores no customer PII; sessions are the only persistent data.
 //
-// PII NOTE: firstName, lastName, email, accountOwner, locale, collaborator,
-// and emailVerified are online-session user fields populated by Shopify when
-// isOnline = true. This app uses OFFLINE sessions exclusively (no per-user
-// token needed). Those columns have been removed so the GDPR compliance
-// webhooks' "no PII stored" claim is accurate. If you switch to online
-// sessions in future, add back only the minimum fields you actually need and
-// update the GDPR handlers accordingly.
+// SESSION MODEL NOTE: The full official Session model is required by
+// @shopify/shopify-app-session-storage-prisma. The library unconditionally
+// writes all 15 fields on every upsert (including firstName, lastName, email,
+// accountOwner, locale, collaborator, emailVerified) regardless of whether the
+// app uses online or offline sessions. This app uses OFFLINE sessions, so
+// those user-identity columns will simply remain null in practice — but they
+// must exist in the schema or the upsert throws a PrismaClientValidationError.
+// The GDPR compliance webhooks' "no PII stored" claim remains accurate for
+// offline-session-only deployments because these columns are never populated.
 
 generator client {
   provider = "prisma-client-js"
@@ -19,12 +20,19 @@ datasource db {
 }
 
 model Session {
-  id          String    @id
-  shop        String
-  state       String
-  isOnline    Boolean   @default(false)
-  scope       String?
-  expires     DateTime?
-  accessToken String
-  userId      BigInt?
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean?
+  locale        String?
+  collaborator  Boolean?
+  emailVerified Boolean?
 }

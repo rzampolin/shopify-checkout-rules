@@ -420,6 +420,91 @@ export async function saveRuleset(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Collection membership resolution (for preview route)
+// ---------------------------------------------------------------------------
+
+/**
+ * GraphQL query to fetch which collections a single product belongs to.
+ * We fetch the first 250 collections — sufficient for real-world rulesets
+ * which are bounded at 100 collection IDs by the platform input-vars limit.
+ */
+const GET_PRODUCT_COLLECTIONS = `#graphql
+  query GetProductCollections($id: ID!) {
+    product(id: $id) {
+      id
+      collections(first: 250) {
+        nodes {
+          id
+        }
+      }
+    }
+  }
+`;
+
+/**
+ * For the preview route: resolves which of the given collection GIDs each
+ * product actually belongs to, using the Admin GraphQL API.
+ *
+ * Returns a Map keyed by productId; each entry is an array of
+ * { collectionId, isMember } matching the PreviewLineInput.collectionMemberships
+ * shape consumed by buildEngineCart.
+ *
+ * Falls back to an empty memberships array if any individual product query
+ * fails, so the preview never crashes due to a transient API error.
+ *
+ * @param admin          - Authenticated Admin API context
+ * @param productIds     - Unique product GIDs to resolve (duplicates ignored)
+ * @param collectionIds  - The collection GIDs to check membership against
+ */
+export async function resolveCollectionMemberships(
+  admin: AdminApiContext,
+  productIds: string[],
+  collectionIds: string[]
+): Promise<Map<string, Array<{ collectionId: string; isMember: boolean }>>> {
+  const result = new Map<
+    string,
+    Array<{ collectionId: string; isMember: boolean }>
+  >();
+
+  if (collectionIds.length === 0 || productIds.length === 0) {
+    return result;
+  }
+
+  const collectionIdSet = new Set(collectionIds);
+  const uniqueProductIds = [...new Set(productIds)];
+
+  await Promise.all(
+    uniqueProductIds.map(async (productId) => {
+      try {
+        const response = await admin.graphql(GET_PRODUCT_COLLECTIONS, {
+          variables: { id: productId },
+        });
+        const data = await response.json();
+        const nodes: Array<{ id: string }> =
+          data?.data?.product?.collections?.nodes ?? [];
+        const memberSet = new Set(nodes.map((n: { id: string }) => n.id));
+        const memberships = collectionIds.map((collectionId) => ({
+          collectionId,
+          isMember: memberSet.has(collectionId) && collectionIdSet.has(collectionId),
+        }));
+        result.set(productId, memberships);
+      } catch {
+        // Graceful fallback: treat all memberships as false for this product
+        result.set(
+          productId,
+          collectionIds.map((collectionId) => ({
+            collectionId,
+            isMember: false,
+          }))
+        );
+      }
+    })
+  );
+
+  return result;
+}
+
 /**
  * Toggle the discount active/inactive by updating its title with the same
  * mutation (status is controlled by startsAt/endsAt; the simplest MVP approach

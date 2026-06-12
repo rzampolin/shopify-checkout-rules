@@ -49,7 +49,7 @@ engine's `EngineResult.operations` out. Business logic lives only in the engine.
 | Scope | Why it is required | Why nothing more |
 |-------|--------------------|------------------|
 | `write_discounts` | Create/update the single automatic **app discount** that hosts the Function, and write its ruleset metafield via `discountAutomaticAppCreate` / `...Update` + `metafieldsSet`. | Read access is implied; no order or customer write needed. |
-| `read_products` | Power the Polaris collection/product resource pickers in the rule builder so merchants choose real collection IDs for `productInCollection` conditions. | `read` only — the app never mutates catalog data. |
+| `read_products` | Power the App Bridge collection/product resource pickers (rule builder collection conditions/actions and the Preview test-cart product picker) so merchants pick real resources instead of pasting GIDs, and resolve product→collection membership server-side for accurate Preview. | `read` only — the app never mutates catalog data. |
 
 **Deliberately excluded:** `read_customers` (customer-tag conditions are evaluated by the
 Function from the live cart's `buyerIdentity`; the builder takes tags as free-text, so no
@@ -171,6 +171,8 @@ output/
 │   ├── shopify.server.ts
 │   ├── db.server.ts
 │   ├── routes/
+│   │   ├── _index/route.tsx           # public landing / login redirect (template entry route)
+│   │   ├── auth.login/route.tsx        # login form (template entry route)
 │   │   ├── app._index.tsx           # rule list + activate toggle
 │   │   ├── app.rules.$id.tsx        # rule builder (conditions→action, drag-order)
 │   │   ├── app.preview.tsx          # test-cart preview (uses rule-engine)

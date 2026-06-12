@@ -1,13 +1,18 @@
 /**
  * app.preview.tsx — Test-cart preview
  *
- * The merchant enters a test cart (line items, quantities, customer tags) and
- * sees which rules fire (the trace) plus the final computed price.
+ * The merchant builds a test cart using the App Bridge product resource picker,
+ * selects customer tags, and sees which rules fire (the trace) plus the final
+ * computed price.
  *
  * IMPORTANT: This route imports the SAME evaluate() function used by the
  * Discount Function — no reimplementation.  Import path uses the Remix "~"
  * alias which resolves to app/lib (the canonical single source of truth per
  * SCHEMA.md §4).
+ *
+ * Collection membership for productInCollection conditions is resolved
+ * server-side in the action via resolveCollectionMemberships() so the merchant
+ * never needs to enter GIDs manually.
  */
 
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
@@ -31,12 +36,13 @@ import {
   Badge,
   Box,
   Divider,
-  Select,
   Checkbox,
+  Thumbnail,
 } from "@shopify/polaris";
+import { useAppBridge } from "@shopify/app-bridge-react";
 import { useState } from "react";
 import shopify from "../shopify.server";
-import { loadRuleset } from "../server/discount.server";
+import { loadRuleset, resolveCollectionMemberships } from "../server/discount.server";
 // Shared engine — single source of truth, no copy, no reimplementation
 import { evaluate } from "~/lib/rule-engine/engine.js";
 import { buildEngineCart } from "~/lib/preview-adapter.js";
@@ -56,15 +62,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 // ---------------------------------------------------------------------------
-// Action — run evaluate() server-side
+// Action — resolve collection memberships server-side, then run evaluate()
 // ---------------------------------------------------------------------------
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  // Authenticate (required even for server-side evaluation)
-  await shopify.authenticate.admin(request);
+  const { admin } = await shopify.authenticate.admin(request);
   const formData = await request.formData();
 
-  const cartSubtotal = formData.get("cartSubtotal") as string;
   const customerTagsCsv = formData.get("customerTagsCsv") as string | null;
   const linesJson = formData.get("lines") as string;
   const rulesetJson = formData.get("ruleset") as string;
@@ -79,7 +83,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ error: "Invalid form data", result: null });
   }
 
-  // Collect all collection IDs from the ruleset for the adapter
+  // Collect all collection IDs referenced in the ruleset
   const allRulesetCollectionIds: string[] = [];
   for (const rule of ruleset.rules) {
     for (const cond of rule.conditions) {
@@ -87,13 +91,53 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         allRulesetCollectionIds.push(...cond.value);
       }
     }
+    if ("collectionId" in rule.action && rule.action.collectionId) {
+      allRulesetCollectionIds.push(rule.action.collectionId);
+    }
   }
+  const uniqueCollectionIds = [...new Set(allRulesetCollectionIds)];
+
+  // Resolve collection memberships server-side for each line that has a productId
+  const productIds = lines
+    .map((l) => l.productId)
+    .filter((id): id is string => id !== null);
+
+  let membershipMap = new Map<
+    string,
+    Array<{ collectionId: string; isMember: boolean }>
+  >();
+
+  if (productIds.length > 0 && uniqueCollectionIds.length > 0) {
+    try {
+      membershipMap = await resolveCollectionMemberships(
+        admin,
+        productIds,
+        uniqueCollectionIds
+      );
+    } catch {
+      // Fall back to empty memberships — preview still runs, just won't match
+      // productInCollection conditions.
+    }
+  }
+
+  // Inject server-resolved memberships into lines (overrides any client-sent value)
+  const resolvedLines: PreviewLineInput[] = lines.map((line) => ({
+    ...line,
+    collectionMemberships: line.productId
+      ? (membershipMap.get(line.productId) ?? [])
+      : [],
+  }));
+
+  // Compute derived cart subtotal from line subtotals (sum of lineSubtotal values)
+  const cartSubtotal = resolvedLines
+    .reduce((sum, l) => sum + (parseFloat(l.lineSubtotal) || 0), 0)
+    .toFixed(2);
 
   const engineCart = buildEngineCart({
     cartSubtotal,
-    lines,
+    lines: resolvedLines,
     customerTagsCsv: customerTagsCsv || null,
-    allRulesetCollectionIds,
+    allRulesetCollectionIds: uniqueCollectionIds,
   });
 
   // Call the SHARED evaluate() — same function as the Discount Function uses
@@ -112,11 +156,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     } else if (op.type === "productDiscountsAdd") {
       for (const target of op.targets) {
-        const line = lines.find((l) => l.id === target.cartLineId);
+        const line = resolvedLines.find((l) => l.id === target.cartLineId);
         if (!line) continue;
         const lineSubtotal = parseFloat(line.lineSubtotal) || 0;
         if ("percentage" in op.value) {
-          // Percentage applies to the target portion of the line
           const qty = target.quantity ?? line.quantity;
           const unitPrice = line.quantity > 0 ? lineSubtotal / line.quantity : 0;
           totalDiscount += (unitPrice * qty * op.value.percentage) / 100;
@@ -154,9 +197,14 @@ function newLine(): PreviewLineInput {
   return {
     id: `line_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     productId: null,
+    variantId: null,
     quantity: 1,
     lineSubtotal: "0.00",
     collectionMemberships: [],
+    productTitle: undefined,
+    variantTitle: undefined,
+    unitPrice: undefined,
+    imageUrl: undefined,
   };
 }
 
@@ -165,61 +213,88 @@ export default function PreviewPage() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submit = useSubmit();
+  const shopifyBridge = useAppBridge();
   const isRunning = navigation.state !== "idle";
 
-  const [cartSubtotal, setCartSubtotal] = useState("100.00");
   const [customerTagsCsv, setCustomerTagsCsv] = useState("");
   const [isGuest, setIsGuest] = useState(false);
   const [lines, setLines] = useState<PreviewLineInput[]>([newLine()]);
 
   const result = actionData?.result as PreviewResult | null | undefined;
 
-  function addLine() {
-    setLines((ls) => [...ls, newLine()]);
-  }
+  // Derived cart subtotal = sum of all line subtotals
+  const cartSubtotal = lines
+    .reduce((sum, l) => sum + (parseFloat(l.lineSubtotal) || 0), 0)
+    .toFixed(2);
+
   function removeLine(idx: number) {
     setLines((ls) => ls.filter((_, i) => i !== idx));
   }
-  function updateLine(idx: number, updates: Partial<PreviewLineInput>) {
+
+  function updateLineQty(idx: number, qty: number) {
     setLines((ls) => {
       const next = [...ls];
-      next[idx] = { ...next[idx], ...updates };
+      const line = next[idx];
+      const unitPrice = parseFloat(line.unitPrice ?? "0") || 0;
+      const newQty = Math.max(1, qty);
+      const newSubtotal = (unitPrice * newQty).toFixed(2);
+      next[idx] = { ...line, quantity: newQty, lineSubtotal: newSubtotal };
       return next;
     });
   }
-  function updateMembership(
-    lineIdx: number,
-    mIdx: number,
-    field: "collectionId" | "isMember",
-    value: string | boolean
-  ) {
-    setLines((ls) => {
-      const next = [...ls];
-      const memberships = [...next[lineIdx].collectionMemberships];
-      memberships[mIdx] = { ...memberships[mIdx], [field]: value };
-      next[lineIdx] = { ...next[lineIdx], collectionMemberships: memberships };
-      return next;
+
+  async function openProductPicker() {
+    const selected = await shopifyBridge.resourcePicker({
+      type: "product",
+      multiple: true,
+      action: "add",
+      selectionIds: [],
     });
-  }
-  function addMembership(lineIdx: number) {
-    setLines((ls) => {
-      const next = [...ls];
-      next[lineIdx] = {
-        ...next[lineIdx],
-        collectionMemberships: [
-          ...next[lineIdx].collectionMemberships,
-          { collectionId: "", isMember: false },
-        ],
-      };
-      return next;
-    });
+    if (!selected || selected.length === 0) return;
+
+    const newLines: PreviewLineInput[] = [];
+    for (const product of selected) {
+      // Use first variant as the default (the picker may have returned variants)
+      const variant = product.variants?.[0];
+      if (!variant) continue;
+
+      const unitPrice = String(variant.price ?? "0");
+      const qty = 1;
+      const lineSubtotal = (parseFloat(unitPrice) * qty).toFixed(2);
+
+      // Defensively handle both image field shapes App Bridge may return
+      const imgSrc =
+        (product as unknown as { images?: Array<{ originalSrc?: string; url?: string }> })
+          ?.images?.[0]?.originalSrc ??
+        (product as unknown as { images?: Array<{ url?: string }> })
+          ?.images?.[0]?.url ??
+        (variant as unknown as { image?: { originalSrc?: string; url?: string } })
+          ?.image?.originalSrc ??
+        undefined;
+
+      newLines.push({
+        id: `line_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        productId: product.id,
+        variantId: variant.id ?? null,
+        quantity: qty,
+        lineSubtotal,
+        collectionMemberships: [],
+        productTitle: product.title,
+        variantTitle: variant.title !== "Default Title" ? variant.title : undefined,
+        unitPrice,
+        imageUrl: imgSrc,
+      });
+    }
+
+    if (newLines.length > 0) {
+      setLines((ls) => [...ls, ...newLines]);
+    }
   }
 
   function handleRun() {
     if (!ruleset) return;
     submit(
       {
-        cartSubtotal,
         customerTagsCsv: isGuest ? "" : customerTagsCsv,
         lines: JSON.stringify(lines),
         ruleset: JSON.stringify(ruleset),
@@ -271,31 +346,52 @@ export default function PreviewPage() {
               <Text variant="headingMd" as="h2">
                 Test cart
               </Text>
-              <TextField
-                label="Cart subtotal ($)"
-                type="number"
-                value={cartSubtotal}
-                onChange={setCartSubtotal}
-                prefix="$"
-                autoComplete="off"
-              />
+
               <Divider />
               <Text variant="headingSm" as="h3">
                 Line items
               </Text>
-              {lines.map((line, idx) => (
-                <Box
-                  key={line.id}
-                  padding="300"
-                  background="bg-surface-secondary"
-                  borderRadius="200"
-                >
-                  <BlockStack gap="200">
-                    <InlineStack align="space-between">
-                      <Text as="span" fontWeight="semibold">
-                        Line {idx + 1}
-                      </Text>
-                      {lines.length > 1 && (
+
+              {lines.length === 0 && (
+                <Banner tone="info">
+                  <p>No items added yet. Use "Add products" to build your test cart.</p>
+                </Banner>
+              )}
+
+              {lines.map((line, idx) => {
+                const displayTitle = line.productTitle ?? "Product";
+                const displayVariant = line.variantTitle;
+                return (
+                  <Box
+                    key={line.id}
+                    padding="300"
+                    background="bg-surface-secondary"
+                    borderRadius="200"
+                  >
+                    <BlockStack gap="200">
+                      <InlineStack align="space-between" blockAlign="center">
+                        <InlineStack gap="300" blockAlign="center">
+                          {line.imageUrl ? (
+                            <Thumbnail
+                              source={line.imageUrl}
+                              alt={displayTitle}
+                              size="small"
+                            />
+                          ) : null}
+                          <BlockStack gap="0">
+                            <Text as="span" fontWeight="semibold">
+                              {displayTitle}
+                            </Text>
+                            {displayVariant && (
+                              <Text as="span" tone="subdued" variant="bodySm">
+                                {displayVariant}
+                              </Text>
+                            )}
+                            <Text as="span" tone="subdued" variant="bodySm">
+                              ${parseFloat(line.unitPrice ?? "0").toFixed(2)} each
+                            </Text>
+                          </BlockStack>
+                        </InlineStack>
                         <Button
                           variant="plain"
                           tone="critical"
@@ -303,80 +399,48 @@ export default function PreviewPage() {
                         >
                           Remove
                         </Button>
-                      )}
-                    </InlineStack>
-                    <InlineStack gap="200">
-                      <TextField
-                        label="Product GID (optional)"
-                        value={line.productId ?? ""}
-                        onChange={(v) =>
-                          updateLine(idx, { productId: v || null })
-                        }
-                        placeholder="gid://shopify/Product/123"
-                        autoComplete="off"
-                      />
-                      <TextField
-                        label="Quantity"
-                        type="number"
-                        min={1}
-                        value={String(line.quantity)}
-                        onChange={(v) =>
-                          updateLine(idx, { quantity: parseInt(v) || 1 })
-                        }
-                        autoComplete="off"
-                      />
-                      <TextField
-                        label="Line subtotal ($)"
-                        type="number"
-                        value={line.lineSubtotal}
-                        onChange={(v) =>
-                          updateLine(idx, { lineSubtotal: v })
-                        }
-                        prefix="$"
-                        autoComplete="off"
-                      />
-                    </InlineStack>
+                      </InlineStack>
+                      <InlineStack gap="300" blockAlign="center">
+                        <TextField
+                          label="Quantity"
+                          type="number"
+                          min={1}
+                          value={String(line.quantity)}
+                          onChange={(v) =>
+                            updateLineQty(idx, parseInt(v) || 1)
+                          }
+                          autoComplete="off"
+                        />
+                        <BlockStack gap="0">
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            Line subtotal
+                          </Text>
+                          <Text as="span" fontWeight="semibold">
+                            ${parseFloat(line.lineSubtotal).toFixed(2)}
+                          </Text>
+                        </BlockStack>
+                      </InlineStack>
+                    </BlockStack>
+                  </Box>
+                );
+              })}
 
-                    {/* Collection memberships */}
-                    {line.collectionMemberships.length > 0 && (
-                      <BlockStack gap="100">
-                        <Text as="span" tone="subdued">
-                          Collection memberships
-                        </Text>
-                        {line.collectionMemberships.map((m, mIdx) => (
-                          <InlineStack key={mIdx} gap="200" blockAlign="center">
-                            <TextField
-                              label="Collection GID"
-                              labelHidden
-                              value={m.collectionId}
-                              onChange={(v) =>
-                                updateMembership(idx, mIdx, "collectionId", v)
-                              }
-                              placeholder="gid://shopify/Collection/123"
-                              autoComplete="off"
-                            />
-                            <Checkbox
-                              label="Is member"
-                              checked={m.isMember}
-                              onChange={(v) =>
-                                updateMembership(idx, mIdx, "isMember", v)
-                              }
-                            />
-                          </InlineStack>
-                        ))}
-                      </BlockStack>
-                    )}
-                    <Button
-                      variant="plain"
-                      onClick={() => addMembership(idx)}
-                    >
-                      + Add collection membership
-                    </Button>
-                  </BlockStack>
-                </Box>
-              ))}
-              <Button onClick={addLine}>Add line item</Button>
+              <Button onClick={openProductPicker}>Add products</Button>
+
               <Divider />
+
+              {/* Computed cart subtotal */}
+              <InlineStack align="space-between">
+                <Text as="span" fontWeight="semibold">
+                  Cart subtotal
+                </Text>
+                <Text as="span" fontWeight="semibold">
+                  ${parseFloat(cartSubtotal).toFixed(2)}
+                </Text>
+              </InlineStack>
+
+              <Divider />
+
               <BlockStack gap="200">
                 <InlineStack gap="300" blockAlign="center">
                   <Checkbox

@@ -19,23 +19,32 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface PreviewLineInput {
-  /** Arbitrary stable id for this line (user can leave as auto-generated) */
+  /** Arbitrary stable id for this line (auto-generated) */
   id: string;
-  /** Shopify Product GID, e.g. "gid://shopify/Product/123" — used for
-   *  collection membership lookup */
+  /** Shopify Product GID — used for collection membership resolution */
   productId: string | null;
+  /** Shopify Variant GID — the specific variant selected */
+  variantId: string | null;
   quantity: number;
-  /** Line subtotal as a decimal string, e.g. "49.99" */
+  /** Line subtotal as a decimal string — computed from unitPrice * quantity */
   lineSubtotal: string;
   /**
-   * Collection memberships known for this product.
-   * The preview form lets the merchant add collection GID → member pairs
-   * so they can simulate productInCollection conditions without a real cart.
+   * Collection memberships resolved server-side from the Admin API.
+   * The preview form no longer asks the merchant to enter these manually.
    */
   collectionMemberships: Array<{
     collectionId: string;
     isMember: boolean;
   }>;
+  // ---- Display-only fields (not read by buildEngineCart / engine) ----
+  /** Human-readable product title shown in the preview UI */
+  productTitle?: string;
+  /** Human-readable variant title shown in the preview UI */
+  variantTitle?: string;
+  /** Unit price decimal string (from picker) — used to recompute lineSubtotal on qty change */
+  unitPrice?: string;
+  /** Thumbnail image URL for the product/variant */
+  imageUrl?: string;
 }
 
 export interface PreviewCartInput {
@@ -47,7 +56,7 @@ export interface PreviewCartInput {
   /**
    * Full list of collection GIDs referenced in the current ruleset.
    * Used to fill in missing collection membership entries for each line
-   * (collections not explicitly listed by the merchant default to isMember=false).
+   * (collections not explicitly listed default to isMember=false).
    */
   allRulesetCollectionIds: string[];
 }
@@ -59,9 +68,13 @@ export interface PreviewCartInput {
 /**
  * Convert the preview form's flat inputs into an EngineCart.
  *
- * The preview form only knows about what the merchant typed in. For any
- * collection GIDs that appear in the ruleset but are NOT listed in a line's
- * collectionMemberships array, we default isMember to false (safe fallback).
+ * The engine only sees the canonical EngineCart / EngineLineItem shape.
+ * Display-only fields on PreviewLineInput (productTitle, variantTitle,
+ * unitPrice, imageUrl) are ignored here — they never reach the engine.
+ *
+ * For any collection GIDs that appear in the ruleset but are NOT listed in a
+ * line's collectionMemberships array, we default isMember to false (safe
+ * fallback, matching the Function's behaviour when inCollections returns null).
  */
 export function buildEngineCart(input: PreviewCartInput): EngineCart {
   const lines: EngineLineItem[] = input.lines.map((line) => {
@@ -85,7 +98,7 @@ export function buildEngineCart(input: PreviewCartInput): EngineCart {
       cost: {
         subtotalAmount: { amount: line.lineSubtotal },
       },
-      variantId: null, // preview doesn't need variant resolution
+      variantId: line.variantId ?? null,
       productId: line.productId,
       collectionMemberships,
     };

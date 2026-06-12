@@ -8,7 +8,23 @@
     "typegen": "shopify app function typegen"
   },
   "devDependencies": {
-    "@shopify/shopify_function": "^3.0.0",
+    "@shopify/shopify_function": "^2.0.1",
     "typescript": "^5.3.3"
+  },
+  "codegen": {
+    "schema": "schema.graphql",
+    "documents": ["src/cart_lines_discounts_generate_run.graphql"],
+    "generates": {
+      "generated/api.ts": {
+        "plugins": [
+          "typescript",
+          "typescript-operations"
+        ],
+        "config": {
+          "avoidOptionals": false,
+          "enumsAsTypes": false
+        }
+      }
+    }
   }
 }

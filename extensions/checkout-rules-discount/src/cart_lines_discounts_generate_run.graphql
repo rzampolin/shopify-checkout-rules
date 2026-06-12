@@ -15,7 +15,7 @@
 # Changing the metafield value takes effect at runtime with NO deploy.
 # Maximum 100 elements per list (Shopify Functions platform limit).
 
-query CartLinesDiscountsGenerateRun(
+query Input(
   $collectionIds: [ID!]
   $customerTags: [String!]
 ) {

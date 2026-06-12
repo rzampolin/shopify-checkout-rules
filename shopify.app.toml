@@ -1,67 +1,20 @@
-# CheckoutRules — Shopify App Configuration
-# API version 2025-10 (matches the extension)
-# Scopes are minimal and justified in SPEC.md §3.
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
+client_id = "d5dc8aeba37b5265badc9ed433978b4a"
 name = "CheckoutRules"
-client_id = "YOUR_CLIENT_ID"
-application_url = "https://YOUR_APP_URL"
-handle = "checkout-rules"
+application_url = "https://example.com"
 embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-dev_store_url = ""
 include_config_on_deploy = true
-
-[access_scopes]
-# write_discounts — create/update the single automatic app discount that hosts
-#   the Function, and write the $app:ruleset metafield.
-# read_products  — power the collection/product resource picker in the rule
-#   builder so merchants can select real collection GIDs.
-# No customer, order, or checkout scopes are needed (see SPEC §3).
-scopes = "write_discounts,read_products"
-
-[auth]
-redirect_urls = [
-  "https://YOUR_APP_URL/auth/callback",
-  "https://YOUR_APP_URL/auth/shopify/callback",
-  "https://YOUR_APP_URL/api/auth/callback"
-]
 
 [webhooks]
 api_version = "2025-10"
 
-  # App lifecycle
-  [[webhooks.subscriptions]]
-  topics = ["app/uninstalled"]
-  uri = "/webhooks/app-uninstalled"
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_products,write_discounts"
 
-  [[webhooks.subscriptions]]
-  topics = ["app/scopes_update"]
-  uri = "/webhooks/scopes-update"
-
-  # Mandatory GDPR compliance (app stores no PII — handlers return 200 no-op).
-  # Compliance webhooks MUST use the compliance_topics key, not topics.
-  # Using topics here would cause Shopify App Store review rejection.
-  [[webhooks.subscriptions]]
-  compliance_topics = ["customers/data_request"]
-  uri = "/webhooks/customers-data-request"
-
-  [[webhooks.subscriptions]]
-  compliance_topics = ["customers/redact"]
-  uri = "/webhooks/customers-redact"
-
-  [[webhooks.subscriptions]]
-  compliance_topics = ["shop/redact"]
-  uri = "/webhooks/shop-redact"
-
-[pos]
-embedded = false
-
-# Metafield definition for the ruleset — app-owned, type json.
-# Owned by DiscountAutomaticApp nodes; readable by the Function.
-[[metafields]]
-namespace = "$app"
-key = "ruleset"
-type = "json"
-owner_type = "DISCOUNT"
+[auth]
+redirect_urls = [ "https://example.com/auth/callback" ]

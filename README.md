@@ -62,19 +62,16 @@ prisma generate && prisma migrate deploy
 
 ### 3. Configure credentials
 
-Copy `.env.example` to `.env` and fill in your Partner Dashboard values:
-
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-```
-SHOPIFY_API_KEY=your_api_key_from_partner_dashboard
-SHOPIFY_API_SECRET=your_api_secret_from_partner_dashboard
-SHOPIFY_APP_URL=https://your-tunnel-url.trycloudflare.com
-# (the full URL will be displayed by `shopify app dev` in step 5)
-```
+`shopify app dev` injects `SHOPIFY_API_KEY` and `SHOPIFY_API_SECRET` automatically at startup from your linked Partner account — **do not set them in `.env`**. If you define them there, the Remix/Vite plugin overrides the CLI-injected values and breaks embedded auth (you will see `invalid_client` errors in the OAuth flow). See the comment block at the top of `.env.example` for a full explanation.
+
+The only variables you may need to set manually in `.env` are:
+
+- `SHOPIFY_APP_URL` — only for production deployments; `shopify app dev` sets this automatically via the Cloudflare tunnel URL during development.
+- `DATABASE_URL` — defaults to `file:./dev.db` (SQLite). Swap for a Postgres/MySQL URL in production.
 
 ### 4. Link your app to the Partner account
 
@@ -159,6 +156,33 @@ Use Preview to verify each scenario returns the expected trace and final price.
 ---
 
 ## Trade-offs & Deployment
+
+### Production URL configuration
+
+`shopify.app.toml` contains `application_url` and `redirect_urls` which are
+currently set to `https://example.com` placeholders.
+
+During `shopify app dev` these values are **automatically overridden** by the
+CLI because `automatically_update_urls_on_dev = true` is set — the CLI
+rewrites them to the live Cloudflare tunnel URL for the duration of the dev
+session without touching the file on disk.
+
+However, `include_config_on_deploy = true` is also set, which means every
+time you run `shopify app deploy`, the CLI reads `shopify.app.toml` from disk
+and pushes its current contents to the Partner Dashboard — including the URL
+fields.  **If you leave the placeholder `https://example.com` in the file, a
+`shopify app deploy` will reset your live app's URL to the placeholder on
+every deploy**, breaking OAuth for all installed merchants.
+
+Before running `shopify app deploy` against production, replace the
+placeholder with your real production URL in both fields:
+
+```toml
+application_url = "https://your-real-app.example.com"
+
+[auth]
+redirect_urls = [ "https://your-real-app.example.com/auth/callback" ]
+```
 
 **Rule changes take effect immediately — no redeploy needed.** When `saveRuleset()` is called, the app writes the full ordered ruleset JSON into the discount's `$app:ruleset` metafield and writes the set of collection GIDs and customer tags used by the rules into the discount's `$app:function-input-vars` metafield. The Function reads both metafields at runtime via its input query; Shopify resolves the metafield values fresh on every checkout evaluation. Adding a rule that references a new collection or customer tag is therefore instantaneous — no `shopify app deploy` required.
 

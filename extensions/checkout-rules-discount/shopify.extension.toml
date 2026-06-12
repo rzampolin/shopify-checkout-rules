@@ -4,14 +4,14 @@ api_version = "2025-10"
 type = "function"
 name = "Checkout Rules Discount"
 handle = "checkout-rules-discount"
+uid = "3efd684a-0336-41ab-90cd-ae3114a426152b44fe3c"
 
 [[extensions.targeting]]
 target = "cart.lines.discounts.generate.run"
-export = "cartLinesDiscountsGenerateRun"
+export = "cart-lines-discounts-generate-run"
 input_query = "src/cart_lines_discounts_generate_run.graphql"
 
 [extensions.build]
-command = "npm run build"
 watch_paths = ["src/**/*.ts", "../../../app/lib/rule-engine/**/*.ts"]
 
 [extensions.ui.paths]

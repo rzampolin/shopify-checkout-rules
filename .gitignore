@@ -1,1 +1,44 @@
+# Dependencies
+node_modules
+
+# Secrets / environment
 .env
+.env.*
+!.env.example
+
+# Remix / Vite build output
+/build
+/public/build
+/.cache
+.vite
+
+# Shopify CLI
+.shopify
+extensions/*/.shopify
+
+# Shopify Functions extension build artifacts
+extensions/*/dist
+extensions/*/generated
+extensions/*/schema.graphql
+
+# Compiled TypeScript output (sources live as .ts/.tsx)
+app/lib/rule-engine/*.js
+app/lib/rule-engine/*.js.map
+app/lib/rule-engine/*.d.ts
+app/lib/rule-engine/*.d.ts.map
+
+# Local Prisma dev databases
+prisma/dev.db
+prisma/dev.sqlite
+prisma/dev.sqlite-journal
+*.db-journal
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json

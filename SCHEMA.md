@@ -303,8 +303,13 @@ correctly under the monorepo layout.
 
 File: `extensions/checkout-rules-discount/src/cart_lines_discounts_generate_run.graphql`
 
+The operation is named `Input` so the generated typegen output (`generated/api.ts`)
+produces the `InputQuery` type that the adapter imports. The export name and target
+are unchanged (`cartLinesDiscountsGenerateRun` / `cart.lines.discounts.generate.run`);
+only the operation name drives the generated type name.
+
 ```graphql
-query CartLinesDiscountsGenerateRun(
+query Input(
   $collectionIds: [ID!]
   $customerTags: [String!]
 ) {
